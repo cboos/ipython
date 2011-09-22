@@ -204,24 +204,21 @@ class InputHookManager(object):
         if app is None:
             app = QtGui.QApplication([" "])
 
-        if 'pyreadline' in sys.modules:
-            # see IPython GitHub Issue #481 for more info on problems
-            # seen when PyQt's qtcore_input_hook is run in PyReadline's
-            # Console.get() method.
-            # Similar intermittent behavior has been reported on OSX,
-            # but not consistently reproducible (?)
+        # Always use the following input hook instead of PyQt4's
+        # default one, as it interacts better with readline packages
+        # (issue #481)
 
-            def inputhook_qt4():
-                app.processEvents(QtCore.QEventLoop.AllEvents, 300)
-                if not stdin_ready():
-                    timer = QtCore.QTimer()
-                    timer.timeout.connect(app.quit)
-                    while not stdin_ready():
-                        timer.start(50)
-                        app.exec_()
-                        timer.stop()
-                return 0
-            self.set_inputhook(inputhook_qt4)
+        def inputhook_qt4():
+            app.processEvents(QtCore.QEventLoop.AllEvents, 300)
+            if not stdin_ready():
+                timer = QtCore.QTimer()
+                timer.timeout.connect(app.quit)
+                while not stdin_ready():
+                    timer.start(50)
+                    app.exec_()
+                    timer.stop()
+            return 0
+        self.set_inputhook(inputhook_qt4)
 
         self._current_gui = GUI_QT4
         app._in_event_loop = True
