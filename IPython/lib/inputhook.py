@@ -209,14 +209,17 @@ class InputHookManager(object):
         # (issue #481)
 
         def inputhook_qt4():
-            app.processEvents(QtCore.QEventLoop.AllEvents, 300)
-            if not stdin_ready():
-                timer = QtCore.QTimer()
-                timer.timeout.connect(app.quit)
-                while not stdin_ready():
-                    timer.start(50)
-                    app.exec_()
-                    timer.stop()
+            try:
+                app.processEvents(QtCore.QEventLoop.AllEvents, 300)
+                if not stdin_ready():
+                    timer = QtCore.QTimer()
+                    timer.timeout.connect(app.quit)
+                    while not stdin_ready():
+                        timer.start(50)
+                        app.exec_()
+                        timer.stop()
+            except KeyboardInterrupt:
+                pass
             return 0
         self.set_inputhook(inputhook_qt4)
 
