@@ -107,28 +107,110 @@ class InputHookManager(object):
         self._callback = None
         self._installed = False
         self._current_gui = None
+        self._inputhook_on_hold = None
 
     def get_pyos_inputhook(self):
-        """Return the current PyOS_InputHook as a ctypes.c_void_p."""
+        """Return the current PyOS_InputHook as a ctypes.c_void_p.
+
+        TODO: mark it obsolete or remove it
+        """
         return ctypes.c_void_p.in_dll(ctypes.pythonapi,"PyOS_InputHook")
 
     def get_pyos_inputhook_as_func(self):
-        """Return the current PyOS_InputHook as a ctypes.PYFUNCYPE."""
+        """Return the current PyOS_InputHook as a ctypes.PYFUNCYPE.
+
+        TODO: mark it obsolete or remove it
+        """
         return self.PYFUNC.in_dll(ctypes.pythonapi,"PyOS_InputHook")
 
-    def set_inputhook(self, callback):
-        """Set PyOS_InputHook to callback and return the previous one."""
-        # On platforms with 'readline' support, it's all too likely to
-        # have a KeyboardInterrupt signal delivered *even before* an
-        # initial ``try:`` clause in the callback can be executed, so
-        # we need to disable CTRL+C in this situation.
-        ignore_CTRL_C()
-        self._callback = callback
-        self._callback_pyfunctype = self.PYFUNC(callback)
+    def _set_pyos_inputhook_as_void_p(self, void_p):
+        """Assign a ctypes void_p to PyOS_InputHook.
+
+        Return the current PyOS_InputHook callback.
+        """
         pyos_inputhook_ptr = self.get_pyos_inputhook()
         original = self.get_pyos_inputhook_as_func()
-        pyos_inputhook_ptr.value = \
-            ctypes.cast(self._callback_pyfunctype, ctypes.c_void_p).value
+        pyos_inputhook_ptr.value = void_p.value
+        return original
+
+    def set_safe_inputhook(self, callback):
+        """Set PyOS_InputHook to callback and return the previous one.
+
+        Such a callback will usually take care of running a GUI's
+        native event loop until there's some keyboard input available
+        (it can use `stdin_ready` for this).
+
+        Notes
+        -----
+        The callback is appropriately wrapped into a function which
+        deals with KeyboardInterrupt in a robust way:
+
+          - an initial KeyboardInterrupt will interrupt the event loop
+            and suspend the input hook,
+          - if a second KeyboardInterrupt follows, it will be processed
+            normally, clearing the prompt
+          - when returning on the prompt (via CTRL+C or ENTER),
+            the suspended input hook will be restored
+
+        Returns
+        -------
+
+        The previously installed callback. If it was installed via
+        `set_safe_inputhook`, the wrapped callback passed originally
+        as parameter can be retrieved from the returned wrapper
+        callback via the 'wrapped' attribute.
+
+        """
+        def safe_callback():
+            """Execute callback passed to set_inputhook safely.
+
+            Any KeyboardInterrupt exception raised during event loop
+            processing will be intercepted and the input hook will be
+            temporarily disabled until we re-enter the prompt (see
+            `_restore_inputhook` below).
+            """
+            try:
+                allow_CTRL_C()
+                callback()
+                ignore_CTRL_C()
+            except KeyboardInterrupt:
+                ignore_CTRL_C()
+                self._inputhook_on_hold = safe_callback
+                print("\nKeyboardInterrupt - event loop interrupted!"
+                      "\n  * hit CTRL+C again to return to the prompt"
+                      "\n    (event loop will then be resumed)"
+                      "\n  * use '%%gui none' to disable the event loop"
+                      " permanently"
+                      "\n    and '%%gui %s' to re-enable it later\n" %
+                      (self._current_gui or '...'))
+                self.suspend_inputhook()
+            return 0
+        safe_callback.wrapped = callback
+
+        # register _restore_inputhook() method as a 'pre_prompt_hook' (once)
+        ip = get_ipython()
+        if not hasattr(ip, '_InputHookManager_preprompthook'):
+            ip.set_hook('pre_prompt_hook', self._restore_inputhook)
+            ip._InputHookManager_preprompthook = True
+
+        return self.set_inputhook(safe_callback)
+
+    def set_inputhook(self, callback):
+        """Set PyOS_InputHook to callback and return the previous one.
+
+        Notes
+        -----
+        We must prevent the KeyboardInterrupt to be raised while the
+        PyOS_InputHook is set to a Python ctypes callback. The
+        callback may itself re-enable normal CTRL+C handling, see
+        `ignore_CTRL_C` and `allow_CTRL_C`.
+
+        """
+        self._callback = callback
+        self._callback_pyfunctype = self.PYFUNC(callback)
+        ignore_CTRL_C()
+        original = self._set_pyos_inputhook_as_void_p(
+            ctypes.cast(self._callback_pyfunctype, ctypes.c_void_p))
         self._installed = True
         return original
 
@@ -143,12 +225,27 @@ class InputHookManager(object):
           the actual value of the parameter is ignored.  This uniform interface
           makes it easier to have user-level entry points in the main IPython
           app like :meth:`enable_gui`."""
-        pyos_inputhook_ptr = self.get_pyos_inputhook()
-        original = self.get_pyos_inputhook_as_func()
-        pyos_inputhook_ptr.value = ctypes.c_void_p(None).value
-        allow_CTRL_C()
+        original = self.suspend_inputhook()
         self._reset()
         return original
+
+    def suspend_inputhook(self):
+        """Set PyOS_InputHook to NULL, but don't reset current state"""
+        original = self._set_pyos_inputhook_as_void_p(ctypes.c_void_p(None))
+        # it is now safe to restore normal CTRL+C processing
+        allow_CTRL_C()
+        return original
+
+    def _restore_inputhook(self, ishell):
+        """'pre_prompt_hook' used to restore a suspended inputhook.
+
+        If a KeyboardInterrupt has been intercepted by a
+        ''safe_callback'' input hook, the latter is temporarily
+        disabled until the present pre-prompt hook is run.
+        """
+        if self._inputhook_on_hold:
+            self.set_inputhook(self._inputhook_on_hold)
+            self._inputhook_on_hold = None
 
     def clear_app_refs(self, gui=None):
         """Clear IPython's internal reference to an application instance.
@@ -235,9 +332,9 @@ class InputHookManager(object):
             from PyQt4 import QtCore
             app = QtGui.QApplication(sys.argv)
         """
-        from IPython.lib.inputhookqt4 import create_inputhook_qt4
-        app, inputhook_qt4 = create_inputhook_qt4(self, app)
-        self.set_inputhook(inputhook_qt4)
+        from IPython.lib.inputhookqt4 import inputhook_qt4, make_qt4_app
+        app = make_qt4_app(app)
+        self.set_safe_inputhook(inputhook_qt4)
 
         self._current_gui = GUI_QT4
         app._in_event_loop = True
