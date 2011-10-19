@@ -188,7 +188,8 @@ class InputHookManager(object):
         safe_callback.wrapped = callback
 
         # register _restore_inputhook() method as a 'pre_prompt_hook' (once)
-        ip = get_ipython()
+        from IPython.core.interactiveshell import InteractiveShell
+        ip = InteractiveShell.instance()
         if not hasattr(ip, '_InputHookManager_preprompthook'):
             ip.set_hook('pre_prompt_hook', self._restore_inputhook)
             ip._InputHookManager_preprompthook = True
