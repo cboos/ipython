@@ -16,13 +16,37 @@ Author: Christian Boos
 # Imports
 #-----------------------------------------------------------------------------
 
+import os
+import sys
+
 from IPython.core.interactiveshell import InteractiveShell
 from IPython.external.qt_for_kernel import QtCore, QtGui
 from IPython.lib.inputhook import allow_CTRL_C, ignore_CTRL_C, stdin_ready
 
+try:
+    import readline
+    has_readline = True
+except ImportError:
+    has_readline = False
+
 #-----------------------------------------------------------------------------
 # Code
 #-----------------------------------------------------------------------------
+
+if os.name != 'nt' and has_readline:
+    def qt4_exec_until_stdin_ready(app):
+        notifier = QtCore.QSocketNotifier(sys.stdin.fileno(), QtCore.QSocketNotifier.Read)
+        notifier.activated.connect(app.quit)
+        app.exec_()
+else:
+    def qt4_exec_until_stdin_ready(app):
+        timer = QtCore.QTimer()
+        timer.timeout.connect(app.quit)
+        while not stdin_ready():
+            timer.start(50)
+            app.exec_()
+            timer.stop()
+
 
 def create_inputhook_qt4(mgr, app=None):
     """Create an input hook for running the Qt4 application event loop.
@@ -85,12 +109,7 @@ def create_inputhook_qt4(mgr, app=None):
                 return 0
             app.processEvents(QtCore.QEventLoop.AllEvents, 300)
             if not stdin_ready():
-                timer = QtCore.QTimer()
-                timer.timeout.connect(app.quit)
-                while not stdin_ready():
-                    timer.start(50)
-                    app.exec_()
-                    timer.stop()
+                qt4_exec_until_stdin_ready(app)
             ignore_CTRL_C()
         except KeyboardInterrupt:
             ignore_CTRL_C()
